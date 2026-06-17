@@ -1,6 +1,7 @@
 from datetime import datetime
 
 
+# 模拟数据库模块：用内存里的列表和字典代替真实数据库，方便本地演示和测试。
 PRODUCTS = [
     {"sku": "P001", "name": "智利车厘子 500g", "price": 59.9, "stock": 128, "tags": ["水果", "当季"]},
     {"sku": "P002", "name": "新疆阿克苏苹果 2kg", "price": 29.9, "stock": 320, "tags": ["水果", "热销"]},
@@ -48,12 +49,14 @@ CHAT_HISTORY: list[dict] = []
 
 
 def search_products(keyword: str | None = None) -> list[dict]:
+    # 按商品名或标签搜索商品；没有关键词时返回全部商品。
     if not keyword:
         return PRODUCTS
     return [item for item in PRODUCTS if keyword in item["name"] or keyword in "".join(item["tags"])]
 
 
 def get_order(order_id: str | None, user_id: str) -> dict | None:
+    # 查询订单：传订单号时按订单号找，否则返回该用户名下第一笔订单。
     if order_id:
         order = ORDERS.get(order_id)
         if order and order["user_id"] == user_id:
@@ -66,10 +69,12 @@ def get_order(order_id: str | None, user_id: str) -> dict | None:
 
 
 def list_coupons(user_id: str) -> list[dict]:
+    # 根据用户 ID 返回优惠券列表，没有则返回空列表。
     return COUPONS.get(user_id, [])
 
 
 def create_ticket(user_id: str, session_id: str, message: str, reason: str) -> dict:
+    # 创建人工或售后工单，并追加到内存工单列表中。
     ticket = {
         "ticket_id": f"T{len(TICKETS) + 1:06d}",
         "user_id": user_id,
@@ -84,4 +89,5 @@ def create_ticket(user_id: str, session_id: str, message: str, reason: str) -> d
 
 
 def save_chat(record: dict) -> None:
+    # 保存一次聊天记录，方便后续排查 Agent 的判断和回复。
     CHAT_HISTORY.append(record)
