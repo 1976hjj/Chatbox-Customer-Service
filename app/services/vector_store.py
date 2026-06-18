@@ -30,6 +30,10 @@ class LocalVectorStore:
         # 优先加载已存在的索引文件；没有文件时自动重新构建。
         if self.index_path.exists():
             self.documents = json.loads(self.index_path.read_text(encoding="utf-8"))
+            indexed_ids = {doc.get("id") for doc in self.documents}
+            source_ids = {doc.get("id") for doc in KNOWLEDGE_DOCS}
+            if indexed_ids != source_ids:
+                self.build()
         else:
             self.build()
 

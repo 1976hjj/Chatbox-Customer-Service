@@ -78,7 +78,7 @@ def mock_intent_response(text: str, rule_intent: dict | None = None) -> str:
         intent_code = "order_query"
         confidence = 0.9
         reason = "用户在询问订单或物流状态"
-    elif any(word in text for word in ["商品", "产品", "价格", "库存", "有没有", "推荐", "苹果", "牛油果", "草莓"]):
+    elif any(word in text for word in ["商品", "产品", "价格", "库存", "有没有", "能否买", "买", "介绍", "推荐", "苹果", "牛油果", "草莓", "高达", "避孕套"]):
         intent_code = "product_inquiry"
         confidence = 0.88
         reason = "用户在咨询商品信息"
@@ -105,7 +105,7 @@ def mock_intent_response(text: str, rule_intent: dict | None = None) -> str:
         "llm_reason": reason,
     }
     order_id = extract_order_id(text)
-    product = extract_product_keyword(text)
+    product = extract_product_keyword(text) or _extract_requested_product(text)
     if order_id:
         slots["order_id"] = order_id
     if product:
@@ -126,11 +126,33 @@ def mock_intent_response(text: str, rule_intent: dict | None = None) -> str:
     )
 
 
+def _extract_requested_product(text: str) -> str | None:
+    for keyword in ["高达", "避孕套", "玩具", "苹果", "牛油果", "草莓"]:
+        if keyword in text:
+            return keyword
+    markers = ["能否买", "有没有", "介绍", "买"]
+    for marker in markers:
+        if marker in text:
+            tail = text.split(marker, 1)[1].strip(" ，。！？?：:")
+            return tail[:12] or None
+    return None
+
+
 def mock_chat_response(prompt: str, messages: list[dict[str, str]] | None = None) -> str:
     text = prompt
     if messages:
         text = messages[-1].get("content", "")
 
+    if "替代推荐上下文" in text:
+        return "当前没有查到该商品在售。我们主要售卖生鲜食品，可以看看阿克苏苹果、鲜鸡蛋或三文鱼，都是当前可售商品，适合日常补货。"
+    if "RAG 商品上下文" in text:
+        if "三文鱼" in text:
+            return "挪威三文鱼切片 200g 现在有货，肉质细腻、油脂感足，适合刺身、轻煎或搭配沙拉。冷链到家后建议尽快冷藏，开封当天食用口感更好。"
+        return "阿克苏苹果主打脆甜多汁，2kg 规格适合家庭日常补货。可以直接鲜食、切水果盘或搭配酸奶；收到后建议冷藏或放阴凉处保存。"
+    if "商品推荐上下文" in text:
+        if "三文鱼" in text:
+            return "挪威三文鱼切片 200g 有货，价格 49.9 元，当前库存 34 件。适合做刺身、轻煎或沙拉，收到后建议冷藏并尽快食用。"
+        return "有货的，推荐您优先看库存充足的热销商品；价格和库存都比较稳，收到后建议按页面提示冷藏或尽快食用。"
     if any(word in text for word in ["你好", "您好", "hi", "hello"]):
         return "您好，我是智能客服助手。您可以告诉我订单号、商品名，或直接描述遇到的问题。"
     if any(word in text for word in ["售后", "退款", "退货", "赔付"]):
@@ -183,7 +205,11 @@ def mock_react_action(context: dict[str, Any]) -> str:
             return _react_json("User asks about product information, so call query_product first.", "query_product", {"product": slots.get("product")})
         return _react_json("No specific tool is obvious, so search the knowledge base.", "search_knowledge", {"query": context["message"], "top_k": 3})
 
-    if "query_product" in done_actions and "search_knowledge" not in done_actions:
+    product_observation = next((item for item in observations if item["action"] == "query_product"), None)
+    product_count = len((product_observation or {}).get("result", {}).get("products", []))
+    if "query_product" in done_actions and product_count == 0 and "recommend_product" not in done_actions:
+        return _react_json("No exact product was found; recommend available alternatives.", "recommend_product", {"product": slots.get("product")})
+    if "query_product" in done_actions and product_count > 0 and "search_knowledge" not in done_actions:
         return _react_json("Product data is available; search knowledge base for supporting policy.", "search_knowledge", {"query": context["message"], "top_k": 2})
 
     return _react_json("The observations are enough to answer.", "final", final_answer="")

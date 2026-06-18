@@ -117,6 +117,47 @@ POST `http://127.0.0.1:8000/api/v1/chat`
 }
 ```
 
+## 前端 React 聊天界面
+
+前端项目放在 `E:\codex\Skill\Customer-Service-Chat-FrontEnd\`，默认连接本地后端 `http://127.0.0.1:8000`。
+
+### 启动后端
+
+```powershell
+$env:LLM_PROVIDER="zhipu"
+$env:LLM_MODEL="glm-4.7-flash"
+$env:LLM_API_KEY="你的智谱 API Key"
+$env:LLM_MAX_TOKENS="2048"
+$env:LLM_TIMEOUT="180"
+py -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+### 启动前端
+
+```powershell
+cd E:\codex\Skill\Customer-Service-Chat-FrontEnd
+npm.cmd install
+npm.cmd run dev
+```
+
+打开：
+
+- http://127.0.0.1:5173
+
+如果后端地址不是 `127.0.0.1:8000`，可以这样指定：
+
+```powershell
+$env:VITE_API_BASE="http://127.0.0.1:8000"
+npm.cmd run dev
+```
+
+界面会显示：
+
+- 客服聊天窗口
+- 快捷测试问题
+- 后端连接状态
+- `route`、`intent`、`tool_calls`、`react_steps` 等 Agent 调试信息
+
 重点看响应里的这些字段：
 
 ```json
@@ -176,6 +217,40 @@ POST `http://127.0.0.1:8000/api/v1/chat`
 }
 ```
 
+### 1.2 商品推荐优化示例
+
+商品库有货时，Agent 会先查商品，再优先连接本地知识库/RAG 生成介绍；如果 RAG 不足，再让大模型做简短销售推荐：
+
+```json
+{
+  "session_id": "s-sales-001",
+  "user_id": "u1001",
+  "message": "苹果有没有货，给我推荐一下"
+}
+```
+
+商品库没有命中时，Agent 不会编造库存，会说明当前没有查到，并基于现有生鲜商品做简短替代推荐：
+
+```json
+{
+  "session_id": "s-sales-002",
+  "user_id": "u1001",
+  "message": "能否买高达，介绍一下高达这个玩具"
+}
+```
+
+```json
+{
+  "session_id": "s-sales-003",
+  "user_id": "u1001",
+  "message": "能否买避孕套"
+}
+```
+
+前端右侧 Agent 面板会展示 `llm_calls`，可以直接看到每次 LLM 调用的 request、raw_response 和解析结果。
+
+例如“介绍一下阿克苏苹果”会优先命中本地知识库 `kb_007`，再生成商品介绍。
+
 ### 2. LLM 直接回答问候
 
 POST `http://127.0.0.1:8000/api/v1/chat`
@@ -234,4 +309,33 @@ py -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
   "llm_intent_code": "refund_request",
   "planner": "react_loop"
 }
+```
+
+## 避免 WinError 10013
+
+这个错误通常不是代码逻辑问题，而是 `8000` 或 `5173` 端口已经被之前启动的进程占用了。推荐以后用脚本启动，它会先检查端口，已经启动就直接提示，不会重复绑定端口。
+
+启动后端：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start_backend.ps1
+```
+
+如果想把后端改到其他端口：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start_backend.ps1 -Port 8010
+```
+
+停止本项目常用开发端口：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\stop_dev_ports.ps1
+```
+
+如果只想手动查端口：
+
+```powershell
+netstat -ano | findstr :8000
+netstat -ano | findstr :5173
 ```

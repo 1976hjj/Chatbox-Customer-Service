@@ -74,3 +74,4 @@ class ChatResponse(BaseModel):
     citations: list[SearchHit] = Field(default_factory=list)
     react_steps: list[str] = Field(default_factory=list)
     llm: dict[str, Any] = Field(default_factory=dict)
+    llm_calls: list[dict[str, Any]] = Field(default_factory=list)

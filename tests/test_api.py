@@ -1,4 +1,8 @@
 import unittest
+import os
+
+os.environ.setdefault("LLM_PROVIDER", "mock")
+os.environ.setdefault("LLM_API_KEY", "")
 
 from fastapi.testclient import TestClient
 from app.main import app
@@ -105,6 +109,46 @@ class ApiTestCase(unittest.TestCase):
         self.assertEqual(data["llm"]["planner"], "react_loop")
         self.assertTrue(any("Action[1]: query_product" in step for step in data["react_steps"]))
         self.assertTrue(any("Action[2]: search_knowledge" in step for step in data["react_steps"]))
+
+    def test_missing_product_gets_alternative_recommendations(self):
+        message = "\u80fd\u5426\u4e70\u9ad8\u8fbe\uff0c\u4ecb\u7ecd\u4e00\u4e0b\u9ad8\u8fbe\u8fd9\u4e2a\u73a9\u5177"
+        response = client.post(
+            "/api/v1/chat",
+            json={"session_id": "s-test", "user_id": "u1001", "message": message},
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        actions = [call["name"] for call in data["tool_calls"]]
+        self.assertIn("query_product", actions)
+        self.assertIn("recommend_product", actions)
+        self.assertIn("\u6ca1\u6709\u67e5\u5230", data["reply"])
+
+    def test_available_product_gets_llm_sales_reply(self):
+        message = "\u82f9\u679c\u6709\u6ca1\u6709\u8d27\uff0c\u7ed9\u6211\u63a8\u8350\u4e00\u4e0b"
+        response = client.post(
+            "/api/v1/chat",
+            json={"session_id": "s-test", "user_id": "u1001", "message": message},
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn("query_product", [call["name"] for call in data["tool_calls"]])
+        self.assertNotIn("\u6682\u65f6\u6ca1\u6709\u67e5\u5230", data["reply"])
+        self.assertTrue(data["reply"])
+
+    def test_product_intro_prefers_local_rag_and_exposes_llm_calls(self):
+        message = "\u4ecb\u7ecd\u4e00\u4e0b\u963f\u514b\u82cf\u82f9\u679c"
+        response = client.post(
+            "/api/v1/chat",
+            json={"session_id": "s-test", "user_id": "u1001", "message": message},
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["route"], "product_rag")
+        self.assertIn("search_knowledge", [call["name"] for call in data["tool_calls"]])
+        self.assertTrue(any(hit["id"] == "kb_007" for hit in data["citations"]))
+        self.assertIn("\u963f\u514b\u82cf\u82f9\u679c", data["reply"])
+        self.assertTrue(data["llm_calls"])
+        self.assertTrue(any(call["task"] == "generate" for call in data["llm_calls"]))
 
 
 if __name__ == "__main__":

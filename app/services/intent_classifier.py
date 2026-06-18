@@ -115,10 +115,10 @@ INTENTS = [
 ]
 
 
-def classify_intent(text: str) -> dict:
+def classify_intent(text: str, llm_service: LLMService | None = None) -> dict:
     # 遍历所有意图关键词，选出命中最多的意图作为本次用户问题的分类。
     rule_result = _classify_by_rules(text)
-    llm_result = LLMService().analyze_intent(text, rule_result)
+    llm_result = (llm_service or LLMService()).analyze_intent(text, rule_result)
     return _fuse_intents(rule_result, llm_result)
 
 

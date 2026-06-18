@@ -12,13 +12,15 @@ class Settings(BaseModel):
     data_dir: Path = Path(__file__).resolve().parents[1] / "data"
     vector_index_path: Path = Path(__file__).resolve().parents[1] / "data" / "vector_index.json"
     max_agent_steps: int = 4
-    llm_provider: str = os.getenv("LLM_PROVIDER", "mock")
-    llm_model: str = os.getenv("LLM_MODEL", "glm-4.7-flash")
+    llm_provider: str = os.getenv("LLM_PROVIDER", "zhipu")
+    llm_model: str = os.getenv("LLM_MODEL", "glm-4.7")
     llm_api_base: str = os.getenv("LLM_API_BASE", "https://open.bigmodel.cn/api/paas/v4")
-    llm_api_key: str = os.getenv("LLM_API_KEY", "")
+    llm_api_key: str = os.getenv("LLM_API_KEY", "bb7a0b9c7aa04e5393b945bc2ca91519.wvomxPFKUxhlVDb1")
     llm_temperature: float = float(os.getenv("LLM_TEMPERATURE", "0.1"))
     llm_max_tokens: int = int(os.getenv("LLM_MAX_TOKENS", "2048"))
     llm_timeout: float = float(os.getenv("LLM_TIMEOUT", "180"))
+    llm_retry_count: int = int(os.getenv("LLM_RETRY_COUNT", "1"))
+    llm_retry_delay: float = float(os.getenv("LLM_RETRY_DELAY", "2"))
 
 
 @lru_cache

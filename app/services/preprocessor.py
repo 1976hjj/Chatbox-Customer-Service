@@ -25,7 +25,7 @@ def extract_order_id(text: str) -> str | None:
 
 def extract_product_keyword(text: str) -> str | None:
     # 从商品关键词表里找用户提到的第一个商品名。
-    products = ["苹果", "牛油果", "鸡蛋", "草莓", "三文鱼", "西兰花", "香蕉", "番茄"]
+    products = ["阿克苏苹果", "苹果", "牛油果", "鸡蛋", "草莓", "三文鱼", "西兰花", "香蕉", "番茄"]
     for product in products:
         if product in text:
             return product
