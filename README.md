@@ -12,9 +12,9 @@
 
 ```powershell
 cd Chatbox-Customer-Service
-py -m pip install -r requirements.txt
-py scripts\setup_vector_store.py
-py -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+python -m pip install -r requirements.txt
+python scripts\setup_vector_store.py
+python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 打开接口文档：
