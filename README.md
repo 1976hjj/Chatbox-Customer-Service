@@ -339,3 +339,39 @@ powershell -ExecutionPolicy Bypass -File .\scripts\stop_dev_ports.ps1
 netstat -ano | findstr :8000
 netstat -ano | findstr :5173
 ```
+
+## 代码分层速览
+
+后端入口仍然是 `app/api/routes.py`，聊天请求会进入 `app/services/agent.py` 的
+`CustomerServiceAgent.run()`。现在 `agent.py` 主要保留主流程编排：
+
+```text
+message
+  -> normalize_message
+  -> analyze_sentiment
+  -> classify_intent
+  -> route_intent
+  -> plan_next_action
+  -> call_tool / search_knowledge
+  -> build reply
+```
+
+几个核心概念可以按层理解：
+
+- 业务决策字段：`intent`、`confidence`、`sentiment`、`route`
+  - `app/services/intent_classifier.py`：规则识别 + LLM 意图融合。
+  - `app/services/sentiment.py`：情绪判断。
+  - `app/agents/router.py`：把 intent/sentiment 映射成 `order`、`refund`、`product_rag`、`human`、`llm` 等 route。
+- 执行字段：`action`、`tool_calls`、`observations`
+  - `app/services/llm_service.py`：`plan_next_action()` 让 planner 决定下一步 action。
+  - `app/agents/executor.py`：清洗 action 参数、调用工具、生成 Observation 摘要。
+  - `app/services/tools.py`：真实工具注册表，比如查商品、查订单、退款、转人工、RAG 检索。
+- 调试字段：`thought`、`react_steps`、`llm_calls`
+  - `react_steps` 在 `agent.py` 中记录 Thought / Action / Observation / Final。
+  - `llm_calls` 来自 `LLMService._record_call()`，记录每次 LLM 的输入、原始输出和解析结果。
+- 最终输出字段：`reply`、`citations`、`handler_type`
+  - `reply` 仍由 `agent.py` 根据工具结果统一组装。
+  - `citations` 来自 `search_knowledge` 的 RAG 命中文档。
+  - `handler_type` 通常来自 LLM 意图结果，用于提示 route 是否应走 tool、rag、transfer 或 llm。
+
+`app/agents/state.py` 只是把这些字段按层列成一个轻量数据结构，帮助阅读和后续重构；当前 API 仍保持原来的 dict 返回格式。

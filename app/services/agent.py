@@ -1,6 +1,8 @@
 from datetime import datetime
 from typing import Any
 
+from app.agents.executor import build_action_input, call_tool, summarize_observation
+from app.agents.router import route_intent
 from app.core.config import get_settings
 from app.repositories import mock_db
 from app.services.intent_classifier import classify_intent
@@ -11,18 +13,26 @@ from app.services.tools import TOOL_REGISTRY
 
 
 class CustomerServiceAgent:
-    """Customer-service Agent with an LLM-driven ReAct planning loop."""
+    """使用 LLM 驱动的 ReAct 规划循环的客服 Agent。"""
 
     def __init__(self) -> None:
         self.llm_service = LLMService()
         self.max_steps = get_settings().max_agent_steps
 
     def run(self, session_id: str, user_id: str, message: str) -> dict:
+        """执行一轮对话。
+
+        状态先经过业务决策字段（意图、情绪、路由），再累积执行字段
+        （工具调用、观察结果），最后生成调试和最终响应字段。
+        """
         self.llm_service.reset_trace()
+
+        # 1) 业务决策状态：清洗文本、识别情绪、分类意图。
         normalized = normalize_message(message)
         sentiment = analyze_sentiment(normalized)
         intent = classify_intent(normalized, self.llm_service)
 
+        # 2) ReAct 循环中逐步累积的执行与调试状态。
         tool_calls: list[dict[str, Any]] = []
         observations: list[dict[str, Any]] = []
         citations: list[dict[str, Any]] = []
@@ -33,9 +43,10 @@ class CustomerServiceAgent:
         ]
 
         reply = ""
-        route = self._route(intent, sentiment)
+        route = route_intent(intent, sentiment)
 
         for step in range(1, self.max_steps + 1):
+            # 规划器读取最新状态，并决定下一步唯一要执行的动作。
             decision = self.llm_service.plan_next_action(
                 {
                     "session_id": session_id,
@@ -44,7 +55,7 @@ class CustomerServiceAgent:
                     "intent": intent,
                     "sentiment": sentiment,
                     "route_hint": route,
-                "available_tools": sorted(TOOL_REGISTRY.keys()),
+                    "available_tools": sorted(TOOL_REGISTRY.keys()),
                     "observations": observations,
                 }
             )
@@ -53,6 +64,7 @@ class CustomerServiceAgent:
             react_steps.append(f"Thought[{step}]: {decision.get('thought', '')}")
             react_steps.append(f"Action[{step}]: {action} {action_input}")
 
+            # final 表示规划器认为不需要再调用工具了。
             if action == "final":
                 reply = decision.get("final_answer") or self._reply_from_observations(route, tool_calls, citations, normalized)
                 react_steps.append(f"Final[{step}]: reply ready")
@@ -64,13 +76,16 @@ class CustomerServiceAgent:
                 react_steps.append(f"Final[{step}]: fallback reply ready")
                 break
 
-            safe_input = self._normalize_action_input(action, action_input, session_id, user_id, normalized, intent)
-            tool_call = self._call(action, **safe_input)
+            # 执行一个工具，再把结果作为 Observation 回传给下一轮规划。
+            safe_input = build_action_input(action, action_input, session_id, user_id, normalized, intent)
+            tool_call = call_tool(action, **safe_input)
             tool_calls.append(tool_call)
             observation = {"action": action, "result": tool_call["result"]}
             observations.append(observation)
-            react_steps.append(f"Observation[{step}]: {self._summarize_observation(action, tool_call['result'])}")
+            react_steps.append(f"Observation[{step}]: {summarize_observation(action, tool_call['result'])}")
 
+            # 有些动作完成后本轮即可结束；商品查询可以继续进入 RAG，
+            # 让规划器在生成最终回复前拥有更丰富的上下文。
             if action == "search_knowledge":
                 citations = tool_call["result"].get("hits", [])
                 if route in {"product_rag", "knowledge"}:
@@ -85,6 +100,8 @@ class CustomerServiceAgent:
             reply = self._reply_from_observations(route, tool_calls, citations, normalized)
             react_steps.append("Final: max steps reached, reply built from observations")
 
+        # 持久化本轮高层记录；tool_calls 和 llm_calls 只留在 API 响应中用于调试，
+        # 不写入模拟聊天历史。
         record = {
             "session_id": session_id,
             "user_id": user_id,
@@ -111,78 +128,6 @@ class CustomerServiceAgent:
             },
             "llm_calls": self.llm_service.calls,
         }
-
-    def _route(self, intent: dict, sentiment: dict) -> str:
-        handler_type = intent["slots"].get("handler_type")
-        if handler_type == "transfer":
-            return "human"
-        if handler_type == "llm":
-            return "llm"
-        if intent["slots"].get("order_id") and intent["intent_id"] == "intent_unknown":
-            return "order"
-        if sentiment["label"] == "negative" and intent["category"] == "complaint":
-            return "human"
-        if intent["intent_id"] in {"intent_001", "intent_002", "intent_003", "intent_007"}:
-            return "product_rag"
-        if intent["intent_id"] in {"intent_100", "intent_104", "intent_105", "intent_106"}:
-            return "order"
-        if intent["intent_id"] in {"intent_103", "intent_201", "intent_102"}:
-            return "refund"
-        if intent["intent_id"] == "intent_005":
-            return "coupon"
-        if intent["intent_id"] in {"intent_200", "intent_203"}:
-            return "human"
-        return "knowledge"
-
-    def _normalize_action_input(
-        self,
-        action: str,
-        action_input: dict[str, Any],
-        session_id: str,
-        user_id: str,
-        message: str,
-        intent: dict,
-    ) -> dict[str, Any]:
-        slots = intent.get("slots", {})
-        if action == "query_product":
-            return {"product": slots.get("product") or action_input.get("product")}
-        if action == "search_knowledge":
-            return {"query": action_input.get("query") or message, "top_k": action_input.get("top_k", 3)}
-        if action == "query_order":
-            return {"order_id": slots.get("order_id") or action_input.get("order_id"), "user_id": user_id}
-        if action == "refund_order":
-            return {"order_id": slots.get("order_id") or action_input.get("order_id"), "user_id": user_id, "reason": action_input.get("reason") or message}
-        if action == "list_coupon":
-            return {"user_id": user_id}
-        if action == "transfer_human":
-            return {
-                "user_id": user_id,
-                "session_id": session_id,
-                "message": action_input.get("message") or message,
-                "reason": action_input.get("reason") or intent.get("intent_name", "human"),
-            }
-        return action_input
-
-    def _call(self, name: str, **kwargs) -> dict:
-        result = TOOL_REGISTRY[name](**kwargs)
-        return {"name": name, "arguments": kwargs, "result": result}
-
-    def _summarize_observation(self, action: str, result: dict) -> str:
-        if action == "query_product":
-            return f"products={len(result.get('products', []))}"
-        if action == "recommend_product":
-            return f"recommendations={len(result.get('recommendations', []))}"
-        if action == "search_knowledge":
-            return f"hits={len(result.get('hits', []))}"
-        if action == "query_order":
-            return "order=found" if result.get("order") else "order=missing"
-        if action == "refund_order":
-            return f"accepted={result.get('accepted')}"
-        if action == "list_coupon":
-            return f"coupons={len(result.get('coupons', []))}"
-        if action == "transfer_human":
-            return f"ticket={result.get('ticket', {}).get('ticket_id')}"
-        return "ok"
 
     def _reply_from_observations(self, route: str, tool_calls: list[dict], citations: list[dict], message: str) -> str:
         results = {call["name"]: call["result"] for call in tool_calls}
