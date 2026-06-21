@@ -1,6 +1,8 @@
 from app.services.preprocessor import extract_order_id, extract_product_keyword
+from app.services.llm_service import LLMService
 
 
+# 意图识别模块：用关键词规则判断用户问题属于商品、订单、售后还是投诉等类别。
 INTENTS = [
     {
         "intent_id": "intent_001",
@@ -113,7 +115,14 @@ INTENTS = [
 ]
 
 
-def classify_intent(text: str) -> dict:
+def classify_intent(text: str, llm_service: LLMService | None = None) -> dict:
+    # 遍历所有意图关键词，选出命中最多的意图作为本次用户问题的分类。
+    rule_result = _classify_by_rules(text)
+    llm_result = (llm_service or LLMService()).analyze_intent(text, rule_result)
+    return _fuse_intents(rule_result, llm_result)
+
+
+def _classify_by_rules(text: str) -> dict:
     best = None
     best_score = 0
     for intent in INTENTS:
@@ -133,6 +142,7 @@ def classify_intent(text: str) -> dict:
     else:
         confidence = min(0.98, 0.52 + best_score * 0.16)
 
+    # slots 保存从文本里顺手抽出的结构化信息，比如订单号和商品名。
     slots = {}
     order_id = extract_order_id(text)
     product = extract_product_keyword(text)
@@ -148,3 +158,87 @@ def classify_intent(text: str) -> dict:
         "confidence": round(confidence, 3),
         "slots": slots,
     }
+
+
+def _fuse_intents(rule_result: dict, llm_result: dict) -> dict:
+    rule_confidence = float(rule_result.get("confidence", 0))
+    llm_confidence = float(llm_result.get("confidence", 0))
+    rule_priority = _intent_priority(rule_result.get("intent_id"))
+    llm_priority = _parse_priority(llm_result.get("priority"), llm_result.get("intent_code"))
+    rule_unknown = rule_result.get("intent_id") == "intent_unknown"
+
+    if rule_unknown or llm_confidence >= rule_confidence + 0.12 or (
+        llm_priority >= rule_priority + 3 and llm_confidence >= 0.85
+    ):
+        llm_meta = _llm_code_meta(llm_result.get("intent_code"))
+        selected = {
+            "intent_id": llm_meta.get("intent_id") or llm_result.get("intent_id", "intent_unknown"),
+            "intent_name": llm_meta.get("intent_name") or llm_result.get("intent_name", "未知意图"),
+            "category": llm_meta.get("category") or llm_result.get("category", "general"),
+            "confidence": round(llm_confidence, 3),
+            "slots": dict(llm_result.get("slots") or {}),
+        }
+        selected["slots"]["handler_type"] = llm_meta.get("handler_type") or selected["slots"].get("handler_type")
+        selected["slots"]["intent_source"] = "llm"
+        selected["slots"]["rule_intent_id"] = rule_result.get("intent_id")
+        selected["slots"]["llm_intent_code"] = llm_result.get("intent_code")
+        return selected
+
+    merged_slots = dict(rule_result.get("slots") or {})
+    merged_slots.setdefault("handler_type", llm_result.get("handler_type"))
+    merged_slots["intent_source"] = "rule"
+    merged_slots["llm_intent_code"] = llm_result.get("intent_code")
+    return {
+        **rule_result,
+        "slots": merged_slots,
+    }
+
+
+def _intent_priority(intent_id: str | None) -> int:
+    if intent_id in {"intent_103", "intent_201", "intent_102", "intent_200", "intent_203"}:
+        return 10
+    if intent_id in {"intent_100", "intent_104", "intent_105", "intent_106"}:
+        return 8
+    if intent_id in {"intent_001", "intent_002", "intent_003", "intent_007"}:
+        return 5
+    if intent_id == "intent_005":
+        return 4
+    return 0
+
+
+def _llm_code_priority(intent_code: str | None) -> int:
+    if intent_code in {"refund_request", "complaint", "human_agent"}:
+        return 10
+    if intent_code == "order_query":
+        return 8
+    if intent_code == "product_inquiry":
+        return 5
+    if intent_code == "coupon":
+        return 4
+    return 0
+
+
+def _parse_priority(priority: object, intent_code: str | None) -> int:
+    if isinstance(priority, int):
+        return priority
+    if isinstance(priority, str):
+        if priority.isdigit():
+            return int(priority)
+        label_scores = {"high": 10, "medium": 5, "low": 1}
+        if priority.lower() in label_scores:
+            return label_scores[priority.lower()]
+    return _llm_code_priority(intent_code)
+
+
+def _llm_code_meta(intent_code: str | None) -> dict:
+    mapping = {
+        "product_inquiry": {"intent_id": "intent_001", "intent_name": "商品咨询", "category": "business", "handler_type": "rag"},
+        "order_query": {"intent_id": "intent_100", "intent_name": "订单查询", "category": "order", "handler_type": "tool"},
+        "refund_request": {"intent_id": "intent_103", "intent_name": "申请退款/售后", "category": "order", "handler_type": "tool"},
+        "coupon": {"intent_id": "intent_005", "intent_name": "优惠券使用", "category": "business", "handler_type": "tool"},
+        "complaint": {"intent_id": "intent_200", "intent_name": "投诉", "category": "complaint", "handler_type": "transfer"},
+        "human_agent": {"intent_id": "intent_203", "intent_name": "人工客服", "category": "complaint", "handler_type": "transfer"},
+        "greeting": {"intent_id": "intent_900", "intent_name": "问候", "category": "general", "handler_type": "llm"},
+        "fallback": {"intent_id": "intent_unknown", "intent_name": "未知意图", "category": "general", "handler_type": "llm"},
+    }
+    return mapping.get(intent_code or "", {})

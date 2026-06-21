@@ -3,6 +3,7 @@ POSITIVE_WORDS = {"谢谢", "不错", "满意", "好吃", "新鲜", "推荐", "�
 
 
 def analyze_sentiment(text: str) -> dict:
+    # 情绪分析模块：比较正向词和负向词命中数，输出情绪标签和一个简单置信分。
     negative_hits = sum(1 for word in NEGATIVE_WORDS if word in text)
     positive_hits = sum(1 for word in POSITIVE_WORDS if word in text)
 
