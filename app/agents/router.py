@@ -1,3 +1,31 @@
+def _after_product_query(result: dict) -> str:
+    """商品查询完成后，根据是否命中商品决定下一状态。"""
+    return "product_found" if result.get("products") else "product_missing"
+
+
+PRODUCT_RAG_ACTIONS = {
+    "start": ("query_product",),
+    "product_found": ("search_knowledge", "final"),
+    "product_missing": ("recommend_product", "final"),
+    "completed": ("final",),
+}
+
+PRODUCT_RAG_TRANSITIONS = {
+    "start": {"query_product": _after_product_query},
+    "product_found": {"search_knowledge": "completed"},
+    "product_missing": {"recommend_product": "completed"},
+}
+
+FLEXIBLE_ROUTE_ACTIONS = {
+    # 必须先完成核心业务工具；之后可补充查规则，也可直接组织最终回复。
+    "human": {"required": "transfer_human", "next": ("final",)},
+    "order": {"required": "query_order", "next": ("search_knowledge", "final")},
+    "refund": {"required": "refund_order", "next": ("search_knowledge", "final")},
+    "coupon": {"required": "list_coupon", "next": ("search_knowledge", "final")},
+    "knowledge": {"required": "search_knowledge", "next": ("final",)},
+}
+
+
 def route_intent(intent: dict, sentiment: dict) -> str:
     """根据业务决策字段确定处理路由。
 
@@ -32,3 +60,40 @@ def route_intent(intent: dict, sentiment: dict) -> str:
     if intent["intent_id"] in {"intent_200", "intent_203"}:
         return "human"
     return "knowledge"
+
+
+def allowed_actions(route: str, observations: list[dict]) -> tuple[str, ...]:
+    """根据当前路由阶段，返回唯一合法的下一步 action。"""
+    done_actions = {item["action"] for item in observations}
+
+    if route == "product_rag":
+        return PRODUCT_RAG_ACTIONS[_product_rag_stage(observations)]
+
+    route_policy = FLEXIBLE_ROUTE_ACTIONS.get(route)
+    if route_policy:
+        required_action = route_policy["required"]
+        if required_action not in done_actions:
+            return (required_action,)
+
+        # 可选查询工具只能调用一次；final 始终保留给 LLM 组织自然语言回复。
+        return tuple(action for action in route_policy["next"] if action == "final" or action not in done_actions)
+    return ("final",)
+
+
+def _product_rag_stage(observations: list[dict]) -> str:
+    """按已完成 action 回放商品状态机，得到当前流程阶段。"""
+    stage = "start"
+    for observation in observations:
+        transition = PRODUCT_RAG_TRANSITIONS.get(stage, {}).get(observation["action"])
+        if transition is None:
+            continue
+        stage = transition(observation["result"]) if callable(transition) else transition
+    return stage
+
+
+def enforce_action(route: str, observations: list[dict], planned_action: str) -> tuple[str, bool]:
+    """校验规划动作；越过路由边界时替换为合法 action。"""
+    permitted_actions = allowed_actions(route, observations)
+    if planned_action in permitted_actions:
+        return planned_action, False
+    return permitted_actions[0], True

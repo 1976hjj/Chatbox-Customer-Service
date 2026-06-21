@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any
 
 from app.agents.executor import build_action_input, call_tool, summarize_observation
-from app.agents.router import route_intent
+from app.agents.router import allowed_actions, enforce_action, route_intent
 from app.core.config import get_settings
 from app.repositories import mock_db
 from app.services.intent_classifier import classify_intent
@@ -46,7 +46,8 @@ class CustomerServiceAgent:
         route = route_intent(intent, sentiment)
 
         for step in range(1, self.max_steps + 1):
-            # 规划器读取最新状态，并决定下一步唯一要执行的动作。
+            # route 划定业务边界，规划器只能在当前步骤允许的 action 中选择。
+            permitted_actions = allowed_actions(route, observations)
             decision = self.llm_service.plan_next_action(
                 {
                     "session_id": session_id,
@@ -54,14 +55,22 @@ class CustomerServiceAgent:
                     "message": normalized,
                     "intent": intent,
                     "sentiment": sentiment,
-                    "route_hint": route,
-                    "available_tools": sorted(TOOL_REGISTRY.keys()),
+                    "route": route,
+                    "allowed_actions": list(permitted_actions),
                     "observations": observations,
                 }
             )
-            action = decision.get("action", "final")
+            planned_action = decision.get("action", "final")
+            action, action_was_constrained = enforce_action(route, observations, planned_action)
             action_input = decision.get("action_input") or {}
+            if action_was_constrained:
+                # 被替换的动作参数不能传给新动作，避免跨业务流程污染参数。
+                action_input = {}
             react_steps.append(f"Thought[{step}]: {decision.get('thought', '')}")
+            if action_was_constrained:
+                react_steps.append(
+                    f"Guard[{step}]: {planned_action} is outside route={route}; using {action}"
+                )
             react_steps.append(f"Action[{step}]: {action} {action_input}")
 
             # final 表示规划器认为不需要再调用工具了。
@@ -84,18 +93,9 @@ class CustomerServiceAgent:
             observations.append(observation)
             react_steps.append(f"Observation[{step}]: {summarize_observation(action, tool_call['result'])}")
 
-            # 有些动作完成后本轮即可结束；商品查询可以继续进入 RAG，
-            # 让规划器在生成最终回复前拥有更丰富的上下文。
+            # 工具结果作为 Observation 留给下一轮规划；LLM 可据此选择补充查询或 final。
             if action == "search_knowledge":
                 citations = tool_call["result"].get("hits", [])
-                if route in {"product_rag", "knowledge"}:
-                    reply = self._reply_from_observations(route, tool_calls, citations, normalized)
-                    react_steps.append(f"Final[{step}]: reply built after knowledge search")
-                    break
-            elif action in {"query_order", "refund_order", "list_coupon", "transfer_human", "recommend_product"}:
-                reply = self._reply_from_observations(route, tool_calls, citations, normalized)
-                react_steps.append(f"Final[{step}]: reply built after {action}")
-                break
         else:
             reply = self._reply_from_observations(route, tool_calls, citations, normalized)
             react_steps.append("Final: max steps reached, reply built from observations")
